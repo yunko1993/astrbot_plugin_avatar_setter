@@ -5,10 +5,12 @@ import httpx
 from astrbot.api.event import filter
 from astrbot.api.star import Context, Star, register
 from astrbot.core.platform import AstrMessageEvent
+# 导入消息组件类型用于精准识别
+from astrbot.api.message_components import Image, At, Plain
 
 logger = logging.getLogger("astrbot")
 
-@register("astrbot_plugin_avatar_setter", "qingcai", "DNF角色图展示助手", "1.1.2")
+@register("astrbot_plugin_avatar_setter", "qingcai", "DNF角色图展示助手", "1.1.5")
 class AvatarSetterPlugin(Star):
     def __init__(self, context: Context):
         super().__init__(context)
@@ -17,7 +19,7 @@ class AvatarSetterPlugin(Star):
         self.avatar_dir = os.path.join(self.data_dir, "avatars")
         os.makedirs(self.avatar_dir, exist_ok=True)
         self.config = self._load_config()
-        logger.info(f"===== [全家福] 插件初始化成功，数据目录: {self.data_dir} =====")
+        logger.info(f"===== [全家福] 1.1.5 加载成功 =====")
 
     def _load_config(self):
         if os.path.exists(self.db_path):
@@ -40,46 +42,48 @@ class AvatarSetterPlugin(Star):
             return
 
         sender_id = str(event.get_sender_id())
-        logger.info(f"=====[全家福] 触发关键词。发送者: {sender_id}, 消息内容: {msg_str} =====")
+        message_chain = event.get_messages()
+        
+        # --- [调试日志] 打印接收到的所有消息段结构 ---
+        logger.info(f"=====[全家福] 收到指令。发送者: {sender_id} =====")
+        for i, seg in enumerate(message_chain):
+            logger.info(f"DEBUG: 段[{i}] 类型: {type(seg).__name__} | 内容: {seg}")
 
-        # 2. 识别被 @ 的人
+        # 2. 识别目标和图片
         target_id = ""
-        for seg in event.get_messages():
-            if hasattr(seg, 'type') and seg.type == "at":
-                target_id = str(seg.data.get("qq") or seg.data.get("user_id", ""))
-            elif hasattr(seg, 'qq') and seg.qq:
-                target_id = str(seg.qq)
-        
-        if not target_id:
-            logger.info("=====[全家福] 未识别到 @ 目标，跳过 =====")
-            return
-        
-        logger.info(f"=====[全家福] 识别到目标 QQ: {target_id} =====")
-
-        # 3. 识别图片 (兼容多种获取方式)
         image_url = ""
-        for seg in event.get_messages():
-            if hasattr(seg, 'type') and seg.type == "image":
-                # 尝试多种可能的 URL 字段
+
+        for seg in message_chain:
+            # 识别 At 对象
+            if isinstance(seg, At):
+                target_id = str(seg.qq)
+            # 识别 Image 对象
+            elif isinstance(seg, Image):
+                # 尝试获取 URL
+                image_url = getattr(seg, 'url', '') or getattr(seg, 'file', '') or ""
+            # 兜底：如果不是标准对象，尝试按旧格式识别
+            elif not target_id and hasattr(seg, 'type') and seg.type == "at":
+                target_id = str(seg.data.get("qq") or seg.data.get("user_id", ""))
+            elif not image_url and hasattr(seg, 'type') and seg.type == "image":
                 image_url = seg.data.get("url") or seg.data.get("file") or ""
-                if image_url and not image_url.startswith("http"): # 如果是本地缓存文件名则清空
-                    image_url = ""
-                break
-        
+
+        # 3. 逻辑判断
+        if not target_id:
+            logger.info("=====[全家福] 未识别到 At 目标 =====")
+            return
+
         is_admin = sender_id in self.config.get("admin_qq", [])
 
-        # --- 情况 A: 包含图片 (设置模式) ---
-        if image_url:
-            logger.info(f"=====[全家福] 检测到图片 URL: {image_url[:50]}... =====")
+        # --- 情况 A: 设置模式 (有图片) ---
+        if image_url and image_url.startswith("http"):
+            logger.info(f"=====[全家福] 进入设置模式。目标: {target_id}, URL: {image_url[:50]}...")
             
             if not is_admin and target_id != sender_id:
-                logger.warn(f"=====[全家福] 权限拒绝: {sender_id} 试图给 {target_id} 设图 =====")
                 yield event.plain_result("❌ 权限不足：你只能设置自己的全家福。")
                 return
             
             try:
                 async with httpx.AsyncClient() as client:
-                    logger.info(f"=====[全家福] 正在从网络下载图片... =====")
                     resp = await client.get(image_url, timeout=15)
                     if resp.status_code == 200:
                         save_path = os.path.join(self.avatar_dir, f"{target_id}.jpg")
@@ -88,34 +92,28 @@ class AvatarSetterPlugin(Star):
                         
                         self.config["avatars"][target_id] = f"{target_id}.jpg"
                         self._save_config()
-                        logger.info(f"=====[全家福] 保存成功: {save_path} =====")
+                        logger.info(f"=====[全家福] 存储成功: {save_path}")
                         yield event.plain_result(f"✅ 设置成功！已更新 {target_id} 的全家福。")
                         event.stop_event()
                     else:
-                        logger.error(f"=====[全家福] 下载失败，状态码: {resp.status_code} =====")
-                        yield event.plain_result("❌ 图片下载失败 (服务器响应异常)")
+                        yield event.plain_result(f"❌ 下载失败，错误码: {resp.status_code}")
             except Exception as e:
-                logger.error(f"=====[全家福] 处理图片时发生崩溃: {e}", exc_info=True)
-                yield event.plain_result(f"❌ 发生错误: {str(e)}")
+                logger.error(f"=====[全家福] 下载崩溃: {e}", exc_info=True)
+                yield event.plain_result(f"❌ 处理异常: {str(e)}")
             return
 
-        # --- 情况 B: 不包含图片 (查看模式) ---
+        # --- 情况 B: 查询模式 (无图片) ---
         else:
-            logger.info(f"=====[全家福] 未检测到图片，进入查询模式 =====")
+            logger.info(f"=====[全家福] 进入查询模式。目标: {target_id}")
             if target_id in self.config.get("avatars", {}):
                 img_path = os.path.join(self.avatar_dir, self.config["avatars"][target_id])
                 if os.path.exists(img_path):
-                    logger.info(f"=====[全家福] 发送图片文件: {img_path} =====")
                     yield event.image_result(img_path)
                     event.stop_event()
                 else:
-                    logger.error(f"=====[全家福] 数据库有记录但文件不存在: {img_path} =====")
-                    yield event.plain_result(f"⚠️ 图片文件丢失，请重新上传。")
+                    yield event.plain_result(f"⚠️ 图片文件已丢失，请重新上传。")
             else:
-                logger.info(f"=====[全家福] 数据库中没有 {target_id} 的记录 =====")
-                # 只有在明确是“查看”且没找到时才提示
-                if "全家福" in msg_str:
-                     yield event.plain_result(f"🔎 尚未设置 {target_id} 的全家福。发送“图片+@他+全家福”即可设置。")
+                yield event.plain_result(f"🔎 尚未设置 {target_id} 的全家福。发送“图片+@他+全家福”即可设置。")
 
     @filter.command("add_avatar_admin")
     async def add_admin(self, event: AstrMessageEvent, qq: str):

@@ -1,5 +1,5 @@
 name: astrbot_plugin_avatar_setter
 author: qingcai
 description: DNF角色图设置助手 (自动创建目录版)
-version: "1.0.6"
+version: "1.1.0"
 dependencies: []

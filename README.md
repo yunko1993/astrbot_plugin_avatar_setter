@@ -1,0 +1,2 @@
+# astrbot_plugin_avatar_setter
+DNF角色图设置助手

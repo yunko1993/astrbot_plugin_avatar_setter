@@ -15,7 +15,7 @@
 ### 方式一：通过 AstrBot WebUI 安装 (推荐)
 1. 打开 AstrBot 仪表盘 -> **插件市场**。
 2. 点击 **通过 GitHub URL 安装**。
-3. 输入本仓库链接：`https://github.com/你的用户名/astrbot_plugin_avatar_setter`
+3. 输入本仓库链接：`https://github.com/yunko1993/astrbot_plugin_avatar_setter`
 4. 点击安装并启用。
 
 ### 方式二：手动安装
